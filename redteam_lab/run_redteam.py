@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Red Team Lab - Main Runner Script
 Integrates Garak framework with adaptive mutation engine
@@ -17,6 +18,15 @@ import os
 import sys
 from datetime import datetime
 
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    try:
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    except:
+        pass  # If it fails, ASCII output will be used as fallback
+
 # Local imports
 from config import ATTACKER_MODEL, TARGET_MODEL, MAX_ITERATIONS
 from attack_orchestrator import AttackOrchestrator
@@ -27,32 +37,59 @@ from probes.adaptive_probe import AdaptiveMutatingProbe, ReActInjectionProbe, PA
 def check_ollama_models():
     """Verify required models are available in Ollama"""
     import ollama
-    
+
     print("Checking Ollama models...")
     try:
-        models = ollama.list()
-        available = [m['name'].split(':')[0] for m in models.get('models', [])]
+        models_response = ollama.list()
         
-        attacker_base = ATTACKER_MODEL.split(':')[0]
-        target_base = TARGET_MODEL.split(':')[0]
+        # Debug: print raw response
+        print(f"[DEBUG] Response type: {type(models_response)}")
+        print(f"[DEBUG] Response: {models_response}")
         
-        missing = []
-        if attacker_base not in available and ATTACKER_MODEL not in [m['name'] for m in models.get('models', [])]:
-            missing.append(ATTACKER_MODEL)
-        if target_base not in available and TARGET_MODEL not in [m['name'] for m in models.get('models', [])]:
-            missing.append(TARGET_MODEL)
+        # Extract model list from response
+        if hasattr(models_response, 'models'):
+            models_list = models_response.models
+        elif isinstance(models_response, dict):
+            models_list = models_response.get('models', [])
+        else:
+            models_list = models_response
         
-        if missing:
-            print(f"[WARN] Missing models: {missing}")
-            print("Pull them with: ollama pull <model_name>")
+        available_models = []
+        for m in models_list:
+            # Handle Model objects (newer Ollama versions)
+            if hasattr(m, 'model'):
+                available_models.append(m.model)
+            # Handle dict format (older versions)
+            elif isinstance(m, dict):
+                name = m.get('name') or m.get('model')
+                if name:
+                    available_models.append(name)
+        
+        print(f"[DEBUG] Available models: {available_models}")
+        print(f"[DEBUG] Looking for: {ATTACKER_MODEL}, {TARGET_MODEL}")
+        
+        # Simple exact match
+        attacker_found = ATTACKER_MODEL in available_models
+        target_found = TARGET_MODEL in available_models
+        
+        if attacker_found:
+            print(f"+ Attacker model: {ATTACKER_MODEL}")
+        else:
+            print(f"x Attacker model not found: {ATTACKER_MODEL}")
+            
+        if target_found:
+            print(f"+ Target model: {TARGET_MODEL}")
+        else:
+            print(f"x Target model not found: {TARGET_MODEL}")
+        
+        if not (attacker_found and target_found):
+            print("\nRun: ollama pull <model_name>")
             return False
-        
-        print(f"✓ Attacker model: {ATTACKER_MODEL}")
-        print(f"✓ Target model: {TARGET_MODEL}")
+            
         return True
         
     except Exception as e:
-        print(f"[ERROR] Cannot connect to Ollama: {e}")
+        print(f"[ERROR] {e}")
         print("Make sure Ollama is running: ollama serve")
         return False
 
@@ -66,21 +103,21 @@ def run_standard_assessment(seeds: list, verbose: bool = True):
 def run_interactive_mode():
     """Interactive mode for manual prompt refinement"""
     import ollama
-    
+
     engine = MutationEngine()
-    
+
     print("\n" + "="*60)
     print("INTERACTIVE MUTATION MODE")
     print("="*60)
     print("Enter a seed prompt and goal. The system will help you refine it.")
     print("Commands: /quit, /reset, /strategy <name>, /save")
     print("="*60 + "\n")
-    
+
     current_prompt = ""
     goal = ""
     iteration = 0
     history = []
-    
+
     while True:
         if not current_prompt:
             print("Enter your seed prompt (end with empty line):")
@@ -91,12 +128,13 @@ def run_interactive_mode():
                     break
                 lines.append(line)
             current_prompt = "\n".join(lines)
-            
+
             goal = input("Enter attack goal: ")
             iteration = 0
-        
-        print(f"\n[Iteration {iteration}] Sending to target model ({TARGET_MODEL})...")
-        
+
+        print(
+            f"\n[Iteration {iteration}] Sending to target model ({TARGET_MODEL})...")
+
         try:
             response = ollama.chat(
                 model=TARGET_MODEL,
@@ -107,16 +145,17 @@ def run_interactive_mode():
         except Exception as e:
             print(f"[ERROR] {e}")
             continue
-        
+
         print(f"\n--- TARGET RESPONSE ---\n{target_response}\n---")
-        
+
         # Analyze response
         analysis = engine.analyze_response(target_response)
         print(f"\nAnalysis:")
-        print(f"  Defense Detected: {analysis.get('defense_detected', 'unknown')}")
+        print(
+            f"  Defense Detected: {analysis.get('defense_detected', 'unknown')}")
         print(f"  Compliance Level: {analysis.get('compliance_level', 0)}%")
         print(f"  Weaknesses: {analysis.get('weaknesses', [])}")
-        
+
         # Store in history
         history.append({
             "iteration": iteration,
@@ -124,7 +163,7 @@ def run_interactive_mode():
             "response": target_response,
             "analysis": analysis
         })
-        
+
         # Get user action
         print("\nOptions:")
         print("  [enter] Auto-mutate")
@@ -135,9 +174,9 @@ def run_interactive_mode():
         print("  [m] Manual edit")
         print("  [s] Save and exit")
         print("  [q] Quit")
-        
+
         choice = input("\nChoice: ").strip().lower()
-        
+
         if choice == 'q':
             break
         elif choice == 's':
@@ -164,16 +203,18 @@ def run_interactive_mode():
                 'o': engine.mutate_obfuscation,
                 '': engine.auto_mutate
             }
-            
+
             mutate_func = strategy_map.get(choice, engine.auto_mutate)
-            
+
             print("\n[Generating mutation using attacker model...]")
-            result = mutate_func(current_prompt, target_response, goal, iteration + 1)
-            
+            result = mutate_func(
+                current_prompt, target_response, goal, iteration + 1)
+
             print(f"\n--- MUTATED PROMPT ---\n{result.mutated_prompt}\n---")
             print(f"Strategy: {result.strategy.value}")
-            
-            use_mutation = input("\nUse this mutation? [Y/n]: ").strip().lower()
+
+            use_mutation = input(
+                "\nUse this mutation? [Y/n]: ").strip().lower()
             if use_mutation != 'n':
                 current_prompt = result.mutated_prompt
                 iteration += 1
@@ -187,9 +228,9 @@ def run_garak_integration(probe_type: str = "adaptive"):
     except ImportError:
         print("[ERROR] Garak not installed. Install with: pip install garak")
         return
-    
+
     print(f"\nRunning Garak integration with {probe_type} probe...")
-    
+
     # Select probe
     if probe_type == "react":
         probe = ReActInjectionProbe()
@@ -197,16 +238,17 @@ def run_garak_integration(probe_type: str = "adaptive"):
         probe = PAIRProbe()
     else:
         probe = AdaptiveMutatingProbe()
-    
+
     print(f"Probe: {probe.name}")
     print(f"Prompts loaded: {len(probe.prompts)}")
-    
+
     # Note: For full Garak CLI integration, use:
     # garak --model_type ollama --model_name qwen3:30b --probes adaptive_probe
-    
+
     print("\nTo run via Garak CLI:")
-    print(f"  garak --model_type ollama --model_name {TARGET_MODEL} --probes probes.adaptive_probe.AdaptiveMutatingProbe")
-    
+    print(
+        f"  garak --model_type ollama --model_name {TARGET_MODEL} --probes probes.adaptive_probe.AdaptiveMutatingProbe")
+
     return probe
 
 
@@ -215,7 +257,7 @@ def main():
         description="Red Team Lab - Adaptive LLM Security Testing"
     )
     parser.add_argument(
-        "--mode", 
+        "--mode",
         choices=["standard", "interactive", "garak", "pair", "react"],
         default="standard",
         help="Execution mode"
@@ -242,32 +284,34 @@ def main():
         action="store_true",
         help="Skip Ollama model check"
     )
-    
+
     args = parser.parse_args()
-    
+
     print("""
-    ╔══════════════════════════════════════════════════════════╗
-    ║           RED TEAM LAB - LLM Security Testing            ║
-    ║                 Adaptive Mutation Engine                  ║
-    ╚══════════════════════════════════════════════════════════╝
+    ============================================================
+               RED TEAM LAB - LLM Security Testing            
+                   Adaptive Mutation Engine                  
+    ============================================================
     """)
-    
+
     # Check models
     if not args.skip_check:
         if not check_ollama_models():
             print("\n[!] Model check failed. Use --skip-check to bypass.")
             sys.exit(1)
-    
+
     # Load seeds
     if args.mode in ["standard", "pair", "react"]:
         probe = AdaptiveMutatingProbe(dataset_paths=args.seeds)
         seeds = probe.get_seeds()
-        
+
         if args.mode == "pair":
-            seeds = [s for s in seeds if s.get("category") in ["pair", "academic_bypass", "crescendo"]]
+            seeds = [s for s in seeds if s.get("category") in [
+                "pair", "academic_bypass", "crescendo"]]
         elif args.mode == "react":
-            seeds = [s for s in seeds if s.get("category") in ["react_injection", "context_poison"]]
-    
+            seeds = [s for s in seeds if s.get("category") in [
+                "react_injection", "context_poison"]]
+
     # Execute based on mode
     if args.mode == "interactive":
         run_interactive_mode()
@@ -278,10 +322,9 @@ def main():
         if args.iterations != MAX_ITERATIONS:
             import config
             config.MAX_ITERATIONS = args.iterations
-        
+
         run_standard_assessment(seeds, verbose=not args.quiet)
 
 
 if __name__ == "__main__":
     main()
-
