@@ -56,14 +56,22 @@ def check_ollama_models():
         
         available_models = []
         for m in models_list:
-            # Handle Model objects (newer Ollama versions)
-            if hasattr(m, 'model'):
-                available_models.append(m.model)
-            # Handle dict format (older versions)
-            elif isinstance(m, dict):
-                name = m.get('name') or m.get('model')
-                if name:
-                    available_models.append(name)
+            try:
+                # Handle Model objects (newer Ollama versions)
+                if hasattr(m, 'model'):
+                    available_models.append(m.model)
+                # Handle dict format (older versions)
+                elif isinstance(m, dict):
+                    # Try both 'name' and 'model' keys
+                    name = m.get('model') or m.get('name')
+                    if name:
+                        available_models.append(name)
+                # Handle string format
+                elif isinstance(m, str):
+                    available_models.append(m)
+            except Exception as parse_error:
+                print(f"[WARN] Failed to parse model entry {m}: {parse_error}")
+                continue
         
         print(f"[DEBUG] Available models: {available_models}")
         print(f"[DEBUG] Looking for: {ATTACKER_MODEL}, {TARGET_MODEL}")
@@ -89,7 +97,10 @@ def check_ollama_models():
         return True
         
     except Exception as e:
-        print(f"[ERROR] {e}")
+        print(f"[ERROR] Cannot connect to Ollama: {e}")
+        print(f"[DEBUG] Error type: {type(e).__name__}")
+        import traceback
+        print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
         print("Make sure Ollama is running: ollama serve")
         return False
 
